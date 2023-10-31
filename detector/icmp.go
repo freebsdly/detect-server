@@ -2,9 +2,9 @@ package detector
 
 import (
 	"context"
+	"detect-server/log"
 	"fmt"
 	"github.com/go-ping/ping"
-	"log"
 	"sync"
 	"time"
 )
@@ -93,7 +93,7 @@ func (detector *IcmpDetector) Start() error {
 		go func(idx int) {
 			err := detector.startRunner(fmt.Sprintf("runner%d", idx))
 			if err != nil {
-				log.Println(err)
+				log.Logger.Errorf("%s", err)
 			}
 		}(i)
 	}
@@ -113,20 +113,24 @@ func (detector *IcmpDetector) startRunner(name string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("stop")
+			log.Logger.Infof("stopping runner %s", name)
 			return nil
 		case target := <-detector.targetQueue:
 			stat, err := detector.Detect(target)
 			if err != nil {
-				log.Printf("%s\n", err)
+				log.Logger.Errorf("%s", err)
 				continue
 			}
-			log.Printf("%s stat: %v\n", target.Ip, *stat)
+			log.Logger.Infof("%s stat: %v", target.Ip, *stat)
 		}
 	}
 }
 
 func (detector *IcmpDetector) Stop() error {
+	for length := len(detector.targetQueue); length > 0; length = len(detector.targetQueue) {
+		time.Sleep(time.Second)
+	}
+	log.Logger.Infof("current length of target queue is 0, stopping detector")
 	detector.parentCancelFunc()
 	return nil
 }
@@ -144,7 +148,7 @@ func (detector *IcmpDetector) stopRunner(name string) error {
 func (detector *IcmpDetector) Detect(target DetectOptions) (*ping.Statistics, error) {
 	defer func() {
 		if err := recover(); err != nil {
-			log.Printf("ping %s failed. %s\n", target.Ip, err)
+			log.Logger.Errorf("ping %s failed. %s\n", target.Ip, err)
 		}
 	}()
 

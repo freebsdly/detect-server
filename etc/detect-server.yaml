@@ -1,0 +1,5 @@
+icmpDetector:
+  maxRunnerCount: 10
+  maxTargetQueue: 10
+  timeout: 1000
+  count: 3
