@@ -4,11 +4,14 @@ Copyright © 2023 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"detect-server/api"
 	"detect-server/detector"
+	dispatcher "detect-server/dispatcher"
 	"detect-server/log"
+	"detect-server/receiver"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"time"
+	"os"
 )
 
 // startCmd represents the start command
@@ -18,7 +21,7 @@ var startCmd = &cobra.Command{
 	Long:  `start detect server daemon`,
 	Run: func(cmd *cobra.Command, args []string) {
 		log.InitLogger()
-		startDetector()
+		startDetectServer()
 	},
 }
 
@@ -36,34 +39,35 @@ func init() {
 	// startCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-func startDetector() {
+func startDetectServer() {
+	var dispatcherOptions = dispatcher.Options{
+		MaxIcmpResultQueueSize: viper.GetInt("dispatcher.icmp.result.queue.maxSize"),
+		IcmpReceiverOptions: receiver.Options{
+			MaxBufferSize: viper.GetInt("receiver.icmp.buffer.maxSize"),
+		},
+	}
 	var icmpDetectorOptions = detector.IcmpDetectorOptions{
-		DefaultTimeout: viper.GetInt("icmpDetector.timeout"),
-		DefaultCount:   viper.GetInt("icmpDetector.count"),
-		MaxRunnerCount: viper.GetInt("icmpDetector.maxRunnerCount"),
-		MaxTargetQueue: viper.GetInt("icmpDetector.maxTargetQueue"),
+		DefaultTimeout:     viper.GetInt("detector.icmp.detect.timeout"),
+		DefaultCount:       viper.GetInt("detector.icmp.detect.count"),
+		MaxRunnerCount:     viper.GetInt("detector.icmp.runner.count"),
+		MaxTaskBufferSize:  viper.GetInt("detector.icmp.task.bufferSize"),
+		MaxResultQueueSize: viper.GetInt("detector.icmp.task.resultQueueSize"),
 	}
-	var icmpDetector = detector.NewIcmpDetector(icmpDetectorOptions)
-	var err = icmpDetector.Start()
-	if err != nil {
-		log.Logger.Errorf("%s", err)
-		return
+	var dis = dispatcher.NewDispatcher(dispatcherOptions)
+	go func() {
+		if err := dis.Start(); err != nil {
+			log.Logger.Errorf("start dispatcher failed. %s", err)
+			os.Exit(1)
+		}
+	}()
+
+	var httpApiOptions = api.HttpApiOptions{
+		Listen:           "0.0.0.0:8080",
+		MaxDetectTargets: 10000,
 	}
-	var targets = []detector.DetectOptions{
-		{
-			Ip: "192.168.1.1",
-		},
-		{
-			Ip: "www.baidu.com",
-		},
-		{
-			Ip: "www.google.com",
-		},
-		{
-			Ip: "192.168.254.1",
-		},
+	var httpApi = api.NewHttpApi(httpApiOptions)
+	httpApi.SetIcmpReceiver(dis.GetIcmpReceiver())
+	if err := httpApi.Start(); err != nil {
+		log.Logger.Errorf("start http api failed. %s", err)
 	}
-	icmpDetector.Detects(targets)
-	icmpDetector.Stop()
-	time.Sleep(time.Second * 5)
 }
