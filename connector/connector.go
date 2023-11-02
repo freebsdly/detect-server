@@ -1,31 +1,39 @@
-package receiver
+package connector
 
 // Receiver as the interface, any api can send detect job
 // to Receiver
 type Receiver[T any] interface {
+	Receive() <-chan T
+}
+
+type Publisher[T any] interface {
 	Publish() chan<- T
-	Subscribe() <-chan T
+}
+
+type Connector[T any] interface {
+	Receiver[T]
+	Publisher[T]
 }
 
 type Options struct {
 	MaxBufferSize int
 }
 
-type commonReceiver[T any] struct {
+type commonConnector[T any] struct {
 	buffer  chan T
 	options Options
 }
 
-func NewReceiver[T any](options Options) Receiver[T] {
-	var receiver = &commonReceiver[T]{
+func NewConnector[T any](options Options) Connector[T] {
+	var connector = &commonConnector[T]{
 		buffer:  make(chan T, options.MaxBufferSize),
 		options: options,
 	}
 
-	return receiver
+	return connector
 }
 
-func (receiver *commonReceiver[T]) Publish() chan<- T {
+func (receiver *commonConnector[T]) Publish() chan<- T {
 	if receiver.buffer == nil {
 		receiver.buffer = make(chan T, receiver.options.MaxBufferSize)
 	}
@@ -33,7 +41,7 @@ func (receiver *commonReceiver[T]) Publish() chan<- T {
 	return receiver.buffer
 }
 
-func (receiver *commonReceiver[T]) Subscribe() <-chan T {
+func (receiver *commonConnector[T]) Receive() <-chan T {
 	if receiver.buffer == nil {
 		receiver.buffer = make(chan T, receiver.options.MaxBufferSize)
 	}

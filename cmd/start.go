@@ -5,10 +5,10 @@ package cmd
 
 import (
 	"detect-server/api"
+	"detect-server/connector"
 	"detect-server/detector"
 	dispatcher "detect-server/dispatcher"
 	"detect-server/log"
-	"detect-server/receiver"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"os"
@@ -40,33 +40,45 @@ func init() {
 }
 
 func startDetectServer() {
-	var dispatcherOptions = dispatcher.Options{
-		MaxIcmpResultQueueSize: viper.GetInt("dispatcher.icmp.result.queue.maxSize"),
-		IcmpReceiverOptions: receiver.Options{
-			MaxBufferSize: viper.GetInt("receiver.icmp.buffer.maxSize"),
-		},
-	}
-	var icmpDetectorOptions = detector.IcmpDetectorOptions{
-		DefaultTimeout:     viper.GetInt("detector.icmp.detect.timeout"),
-		DefaultCount:       viper.GetInt("detector.icmp.detect.count"),
-		MaxRunnerCount:     viper.GetInt("detector.icmp.runner.count"),
-		MaxTaskBufferSize:  viper.GetInt("detector.icmp.task.bufferSize"),
-		MaxResultQueueSize: viper.GetInt("detector.icmp.task.resultQueueSize"),
-	}
-	var dis = dispatcher.NewDispatcher(dispatcherOptions)
-	go func() {
-		if err := dis.Start(); err != nil {
-			log.Logger.Errorf("start dispatcher failed. %s", err)
-			os.Exit(1)
+	var (
+		icmpConnectorOptions = connector.Options{
+			MaxBufferSize: viper.GetInt("connector.icmp.buffer.maxSize"),
 		}
-	}()
+		icmpDetectorOptions = detector.IcmpDetectorOptions{
+			DefaultTimeout:     viper.GetInt("detector.icmp.detect.timeout"),
+			DefaultCount:       viper.GetInt("detector.icmp.detect.count"),
+			MaxRunnerCount:     viper.GetInt("detector.icmp.runner.count"),
+			MaxTaskBufferSize:  viper.GetInt("detector.icmp.task.bufferSize"),
+			MaxResultQueueSize: viper.GetInt("detector.icmp.task.resultQueueSize"),
+		}
+		dispatcherOptions = dispatcher.Options{
+			MaxIcmpResultQueueSize: viper.GetInt("dispatcher.icmp.result.queue.maxSize"),
+		}
+		httpApiOptions = api.HttpApiOptions{
+			Listen:           viper.GetString("api.http.listen"),
+			MaxDetectTargets: viper.GetInt("api.http.maxReceiveSize"),
+		}
+	)
+	var (
+		icmpConnector = connector.NewConnector[detector.Task[detector.IcmpDetect]](icmpConnectorOptions)
+		dispatch      = dispatcher.NewDispatcher(dispatcherOptions)
+		icmpDetector  = detector.NewIcmpDetector(icmpDetectorOptions)
+		httpApi       = api.NewHttpApi(httpApiOptions)
+	)
 
-	var httpApiOptions = api.HttpApiOptions{
-		Listen:           "0.0.0.0:8080",
-		MaxDetectTargets: 10000,
+	var err = icmpDetector.Start()
+	if err != nil {
+		log.Logger.Errorf("start icmp detector failed. %s", err)
 	}
-	var httpApi = api.NewHttpApi(httpApiOptions)
-	httpApi.SetIcmpReceiver(dis.GetIcmpReceiver())
+
+	dispatch.AddIcmpReceiver(icmpConnector)
+	dispatch.AddIcmpDetector(icmpDetector)
+	if err := dispatch.Start(); err != nil {
+		log.Logger.Errorf("start dispatcher failed. %s", err)
+		os.Exit(1)
+	}
+
+	httpApi.AddIcmpPublisher(icmpConnector)
 	if err := httpApi.Start(); err != nil {
 		log.Logger.Errorf("start http api failed. %s", err)
 	}

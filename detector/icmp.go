@@ -73,7 +73,9 @@ func (detector *IcmpDetector) Start() error {
 
 	for i := 1; i <= detector.options.MaxRunnerCount; i++ {
 		go func(idx int) {
-			err := detector.startRunner(fmt.Sprintf("runner%d", idx))
+			var runnerName = fmt.Sprintf("runner%d", idx)
+			log.Logger.Debugf("start icmp detector runner %s", runnerName)
+			err := detector.startRunner(runnerName)
 			if err != nil {
 				log.Logger.Errorf("%s", err)
 			}
@@ -98,11 +100,11 @@ func (detector *IcmpDetector) startRunner(name string) error {
 			log.Logger.Infof("stopping runner %s", name)
 			return nil
 		case task := <-detector.taskBuffer:
+			log.Logger.Debugf("start run task: %v", task)
 			for _, target := range task.Targets {
 				var result = detector.Detect(target)
 				if result.Error != nil {
 					log.Logger.Errorf("%s", err)
-					continue
 				}
 				log.Logger.Debugf("%s stat: %v", target.Target, result)
 				detector.resultQueue <- result
