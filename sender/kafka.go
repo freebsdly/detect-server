@@ -4,21 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"time"
-
 	"github.com/IBM/sarama"
-	"github.com/spf13/viper"
+	"log"
 )
 
 type KafkaSenderOptions struct {
-	Brokers        []string `yaml:"brokers,omitempty"`
-	Topic          string   `yaml:"topic,omitempty"`
-	Partition      int      `yaml:"partition,omitempty"`
-	ClientId       string   `yaml:"client_id"`
-	Timeout        int      `yaml:"timeout"`
-	FlushFrequency int      `yaml:"flush_frequency"`
-	MessageKey     string   `yaml:"message_key"`
+	Brokers     []string       `yaml:"brokers"`
+	Topic       string         `yaml:"topic"`
+	MessageKey  string         `yaml:"message_key"`
+	KafkaConfig *sarama.Config `yaml:"kafka_config"`
 }
 
 type KafkaSender struct {
@@ -29,36 +23,17 @@ type KafkaSender struct {
 }
 
 func NewKafkaSender(options KafkaSenderOptions) *KafkaSender {
-	viper.SetDefault("kafkaSender.brokers", []string{"0.0.0.0:9092"})
-	viper.SetDefault("kafkaSender.producer.retry.max", 1)
-	viper.SetDefault("kafkaSender.producer.return.successes", false)
-	viper.SetDefault("kafkaSender.producer.flush.frequency", 500)
-	viper.SetDefault("kafkaSender.clientId", "detect-server")
-	viper.SetDefault("kafkaSender.producer.timeout", 3000)
-	if len(options.Brokers) == 0 {
-		options.Brokers = []string{
-			"0.0.0.0:9092",
-		}
-	}
-	if options.Timeout <= 0 {
-		options.Timeout = 3
-	}
-
-	if options.FlushFrequency <= 0 {
-		options.FlushFrequency = 500
-	}
-
 	var sender = &KafkaSender{
 		options: options,
 	}
 
 	config := sarama.NewConfig()
 	config.Producer.RequiredAcks = sarama.WaitForAll
-	config.Producer.Retry.Max = 1
-	config.Producer.Return.Successes = false
-	config.ClientID = options.ClientId
-	config.Producer.Flush.Frequency = time.Duration(options.FlushFrequency) * time.Millisecond
-	config.Producer.Timeout = time.Duration(options.Timeout) * time.Second
+	config.Producer.Retry.Max = options.KafkaConfig.Producer.Retry.Max
+	config.Producer.Return.Successes = options.KafkaConfig.Producer.Return.Successes
+	config.ClientID = options.KafkaConfig.ClientID
+	config.Producer.Flush.Frequency = options.KafkaConfig.Producer.Flush.Frequency
+	config.Producer.Timeout = options.KafkaConfig.Producer.Timeout
 
 	var err error
 	sender.kafkaClient, err = sarama.NewAsyncProducer(options.Brokers, config)
@@ -77,7 +52,7 @@ func (sender *KafkaSender) SendMessage(result any) error {
 	sender.kafkaClient.Input() <- &sarama.ProducerMessage{
 		Topic: sender.options.Topic,
 		Key:   sarama.StringEncoder(sender.options.MessageKey),
-		Value: sarama.StringEncoder(string(msg)),
+		Value: sarama.StringEncoder(msg),
 	}
 	return nil
 }

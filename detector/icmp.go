@@ -103,10 +103,6 @@ func (detector *IcmpDetector) startRunner(name string) error {
 			log.Logger.Debugf("start run task: %v", task)
 			for _, target := range task.Targets {
 				var result = detector.Detect(target)
-				if result.Error != nil {
-					log.Logger.Errorf("%s", err)
-				}
-				log.Logger.Debugf("%s stat: %v", target.Target, result)
 				detector.resultQueue <- result
 			}
 		}

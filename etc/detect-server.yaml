@@ -20,6 +20,21 @@ detector:
       bufferSize: 10
       resultQueueSize: 10000
 
+sender:
+  kafka:
+    brokers: 0.0.0.0:9092
+    topic: test
+    messageKey: detect
+    producer:
+      retry:
+        max: 1
+      return:
+        successes: false
+      flush:
+        frequency: 500
+      timeout: 3000
+    clientId: detect-server
+
 log:
   level: debug
   path: detect-server.log

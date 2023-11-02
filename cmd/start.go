@@ -1,6 +1,3 @@
-/*
-Copyright © 2023 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
@@ -9,8 +6,11 @@ import (
 	"detect-server/detector"
 	dispatcher "detect-server/dispatcher"
 	"detect-server/log"
+	"detect-server/sender"
+	"github.com/IBM/sarama"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	_ "gopkg.in/yaml.v3"
 	"os"
 )
 
@@ -58,12 +58,20 @@ func startDetectServer() {
 			Listen:           viper.GetString("api.http.listen"),
 			MaxDetectTargets: viper.GetInt("api.http.maxReceiveSize"),
 		}
+		kafkaSenderOptions = sender.KafkaSenderOptions{
+			Brokers:     viper.GetStringSlice("sender.kafka.brokers"),
+			Topic:       viper.GetString("sender.kafka.topic"),
+			MessageKey:  viper.GetString("sender.kafka.messageKey"),
+			KafkaConfig: sarama.NewConfig(),
+		}
 	)
+
 	var (
 		icmpConnector = connector.NewConnector[detector.Task[detector.IcmpDetect]](icmpConnectorOptions)
 		dispatch      = dispatcher.NewDispatcher(dispatcherOptions)
 		icmpDetector  = detector.NewIcmpDetector(icmpDetectorOptions)
 		httpApi       = api.NewHttpApi(httpApiOptions)
+		kafkaSender   = sender.NewKafkaSender(kafkaSenderOptions)
 	)
 
 	var err = icmpDetector.Start()
@@ -73,6 +81,8 @@ func startDetectServer() {
 
 	dispatch.AddIcmpReceiver(icmpConnector)
 	dispatch.AddIcmpDetector(icmpDetector)
+	dispatch.AddSender(kafkaSender)
+
 	if err := dispatch.Start(); err != nil {
 		log.Logger.Errorf("start dispatcher failed. %s", err)
 		os.Exit(1)

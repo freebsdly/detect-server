@@ -66,6 +66,10 @@ func (dis *Dispatcher) icmpConnect() error {
 			if result.Error != nil {
 				log.Logger.Errorf("detect target %s failed. %s", result.Detect.Target, result.Error)
 			}
+			err := dis.kafkaSender.SendMessage(result)
+			if err != nil {
+				log.Logger.Errorf("send message to kafka failed. %s", err)
+			}
 		}
 	}
 }
