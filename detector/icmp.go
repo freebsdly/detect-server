@@ -5,54 +5,60 @@ import (
 	"detect-server/log"
 	"fmt"
 	"github.com/go-ping/ping"
+	"github.com/spf13/viper"
 	"time"
 )
 
-type IcmpDetect struct {
-	Target  string
-	Count   int
-	Timeout int
+type IcmpOptions struct {
 }
 
 type IcmpDetectorOptions struct {
-	DefaultTimeout     int
-	DefaultCount       int
-	MaxRunnerCount     int
-	MaxTaskBufferSize  int
-	MaxResultQueueSize int
+	DefaultTimeout      int
+	DefaultCount        int
+	MaxRunnerCount      int
+	MaxDetectBufferSize int
+	MaxResultQueueSize  int
 }
 
-// IcmpDetector detect target use icmp protocol
-type IcmpDetector struct {
-	options          IcmpDetectorOptions
-	taskBuffer       chan Task[IcmpDetect]
-	resultQueue      chan Result[IcmpDetect, *ping.Statistics]
-	parentCtx        context.Context
-	parentCancelFunc context.CancelFunc
-	controllers      *Controller
-}
+func NewIcmpDetectorOptions() IcmpDetectorOptions {
+	var options = IcmpDetectorOptions{
+		DefaultTimeout:      viper.GetInt("detector.icmp.detect.timeout"),
+		DefaultCount:        viper.GetInt("detector.icmp.detect.count"),
+		MaxRunnerCount:      viper.GetInt("detector.icmp.runner.count"),
+		MaxDetectBufferSize: viper.GetInt("detector.icmp.detect.buffer.size"),
+		MaxResultQueueSize:  viper.GetInt("detector.icmp.detect.result.queue.size"),
+	}
 
-func NewIcmpDetector(options IcmpDetectorOptions) *IcmpDetector {
 	if options.DefaultTimeout <= 0 {
 		options.DefaultTimeout = 1000
 	}
 	if options.DefaultCount <= 0 {
 		options.DefaultCount = 3
 	}
-	if options.MaxTaskBufferSize <= 0 {
-		options.MaxTaskBufferSize = 10
+	if options.MaxDetectBufferSize <= 0 {
+		options.MaxDetectBufferSize = 256
 	}
 	if options.MaxRunnerCount <= 0 {
 		options.MaxRunnerCount = 10
 	}
-	var ctx, cancelFunc = context.WithCancel(context.TODO())
+
+	return options
+}
+
+// IcmpDetector detect target use icmp protocol
+type IcmpDetector struct {
+	options          IcmpDetectorOptions
+	detectBuffer     chan DetectTarget[IcmpOptions]
+	resultQueue      chan DetectResult[IcmpOptions, *ping.Statistics]
+	parentCtx        context.Context
+	parentCancelFunc context.CancelFunc
+}
+
+func NewIcmpDetector(options IcmpDetectorOptions) Detector[IcmpOptions, *ping.Statistics] {
 	var detector = &IcmpDetector{
-		options:          options,
-		taskBuffer:       make(chan Task[IcmpDetect], options.MaxTaskBufferSize),
-		resultQueue:      make(chan Result[IcmpDetect, *ping.Statistics], options.MaxResultQueueSize),
-		parentCtx:        ctx,
-		parentCancelFunc: cancelFunc,
-		controllers:      NewController(),
+		options:      options,
+		detectBuffer: make(chan DetectTarget[IcmpOptions], options.MaxDetectBufferSize),
+		resultQueue:  make(chan DetectResult[IcmpOptions, *ping.Statistics], options.MaxResultQueueSize),
 	}
 
 	return detector
@@ -63,14 +69,10 @@ func (detector *IcmpDetector) Start() error {
 		return fmt.Errorf("result queue can not be nil")
 	}
 
-	if detector.controllers.RunningCount() > 0 {
-		return fmt.Errorf("can not start detector, it's running")
+	if detector.detectBuffer == nil {
+		return fmt.Errorf("detect queue can not be nil")
 	}
-
-	if detector.taskBuffer == nil {
-		detector.taskBuffer = make(chan Task[IcmpDetect], detector.options.MaxTaskBufferSize)
-	}
-
+	detector.parentCtx, detector.parentCancelFunc = context.WithCancel(context.Background())
 	for i := 1; i <= detector.options.MaxRunnerCount; i++ {
 		go func(idx int) {
 			var runnerName = fmt.Sprintf("runner%d", idx)
@@ -86,81 +88,59 @@ func (detector *IcmpDetector) Start() error {
 
 func (detector *IcmpDetector) startRunner(name string) error {
 	var ctx, cancelFunc = context.WithCancel(detector.parentCtx)
-	var err = detector.controllers.Add(name, &RunnerController{
-		ctx:        ctx,
-		cancelFunc: cancelFunc,
-	})
-	if err != nil {
-		return err
-	}
+	defer cancelFunc()
 
 	for {
 		select {
 		case <-ctx.Done():
 			log.Logger.Infof("stopping runner %s", name)
 			return nil
-		case task := <-detector.taskBuffer:
-			log.Logger.Debugf("start run task: %v", task)
-			for _, target := range task.Targets {
-				var result = detector.Detect(target)
-				detector.resultQueue <- result
-			}
+		case detect := <-detector.detectBuffer:
+			var result = detector.Detect(detect)
+			detector.resultQueue <- result
+
 		}
 	}
 }
 
 func (detector *IcmpDetector) Stop() error {
-	for length := len(detector.taskBuffer); length > 0; length = len(detector.taskBuffer) {
+	for length := len(detector.detectBuffer); length > 0; length = len(detector.detectBuffer) {
 		time.Sleep(time.Second)
 	}
 	log.Logger.Infof("current length of target queue is 0, stopping detector")
 	detector.parentCancelFunc()
-	detector.controllers = NewController()
 	return nil
 }
 
-func (detector *IcmpDetector) stopRunner(name string) error {
-	controller, exist := detector.controllers.Get(name)
-	if !exist {
-		return fmt.Errorf("can not found runner %s", name)
+func (detector *IcmpDetector) Detect(target DetectTarget[IcmpOptions]) DetectResult[IcmpOptions, *ping.Statistics] {
+	var result = DetectResult[IcmpOptions, *ping.Statistics]{
+		Target: target,
 	}
-	controller.cancelFunc()
-	return nil
-
-}
-
-func (detector *IcmpDetector) Detect(detect IcmpDetect) Result[IcmpDetect, *ping.Statistics] {
-	var result = Result[IcmpDetect, *ping.Statistics]{
-		Detect: detect,
-	}
-	pinger, err := ping.NewPinger(detect.Target)
+	pinger, err := ping.NewPinger(target.Target)
 	pinger.SetPrivileged(true)
 	if err != nil {
 		result.Error = err
 		return result
 	}
-	if detect.Count <= 0 {
-		detect.Count = detector.options.DefaultCount
+	if target.Options.Count <= 0 {
+		target.Options.Count = detector.options.DefaultCount
 	}
-	pinger.Count = detect.Count
+	pinger.Count = target.Options.Count
 
-	if detect.Timeout <= 0 {
-		detect.Timeout = detector.options.DefaultTimeout
+	if target.Options.Timeout <= 0 {
+		target.Options.Timeout = detector.options.DefaultTimeout
 	}
-	pinger.Timeout = time.Duration(detect.Timeout) * time.Millisecond
-	if err = pinger.Run(); err != nil {
-		result.Error = err
-		return result
-	}
-	result.Data = pinger.Statistics()
+	pinger.Timeout = time.Duration(target.Options.Timeout) * time.Millisecond
+	result.Error = pinger.Run()
+	result.Result = pinger.Statistics()
 	return result
 }
 
 // Detects detect target async
-func (detector *IcmpDetector) Detects() chan<- Task[IcmpDetect] {
-	return detector.taskBuffer
+func (detector *IcmpDetector) Detects() chan<- DetectTarget[IcmpOptions] {
+	return detector.detectBuffer
 }
 
-func (detector *IcmpDetector) Results() <-chan Result[IcmpDetect, *ping.Statistics] {
+func (detector *IcmpDetector) Results() <-chan DetectResult[IcmpOptions, *ping.Statistics] {
 	return detector.resultQueue
 }

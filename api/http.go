@@ -3,13 +3,17 @@ package api
 import (
 	"detect-server/connector"
 	"detect-server/detector"
+	"detect-server/dispatcher"
+	"detect-server/tools"
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 	"net/http"
 )
 
 type IcmpDetectPayload struct {
 	Timeout int      `json:"timeout"`
 	Count   int      `json:"count"`
+	Type    string   `json:"type"`
 	Targets []string `json:"targets"`
 }
 
@@ -32,14 +36,59 @@ type HttpApiOptions struct {
 	MaxDetectTargets int
 }
 
+func NewHttpApiOptions() HttpApiOptions {
+	var options = HttpApiOptions{
+		Listen: viper.GetString("api.http.listen"),
+	}
+
+	if options.Listen == "" {
+		options.Listen = "0.0.0.0:8080"
+	}
+	return options
+}
+
 type HttpApi struct {
 	srv           *gin.Engine
 	options       HttpApiOptions
-	icmpPublisher connector.Publisher[detector.Task[detector.IcmpDetect]]
+	icmpPublisher connector.Publisher[dispatcher.Task[detector.IcmpOptions]]
 }
 
-func (api *HttpApi) AddIcmpPublisher(publisher connector.Publisher[detector.Task[detector.IcmpDetect]]) {
+func (api *HttpApi) AddIcmpPublisher(publisher connector.Publisher[dispatcher.Task[detector.IcmpOptions]]) {
 	api.icmpPublisher = publisher
+}
+
+func convertPayloadToIcmpTask(payload IcmpDetectPayload) ([]dispatcher.Task[detector.IcmpOptions], error) {
+	var tasks = make([]dispatcher.Task[detector.IcmpOptions], 0)
+	var err error
+	if payload.Type == "subnet" {
+		for _, subnet := range payload.Targets {
+			var ips []string
+			ips, err = tools.ListIpsInNetwork(subnet)
+			if err != nil {
+				return nil, err
+			}
+			var options = detector.DetectOptions[detector.IcmpOptions]{
+				Count:   payload.Count,
+				Timeout: payload.Timeout,
+			}
+			var detects = make([]detector.DetectTarget[detector.IcmpOptions], 0)
+			for _, target := range ips {
+				detects = append(detects, detector.NewDetectTarget(detector.ICMPDetect, target, options))
+			}
+			tasks = append(tasks, dispatcher.NewTask[detector.IcmpOptions](subnet, detects))
+		}
+	} else {
+		for _, target := range payload.Targets {
+			var options = detector.DetectOptions[detector.IcmpOptions]{
+				Count:   payload.Count,
+				Timeout: payload.Timeout,
+			}
+			var detect = detector.NewDetectTarget(detector.ICMPDetect, target, options)
+			tasks = append(tasks, dispatcher.NewTask[detector.IcmpOptions]("task", []detector.DetectTarget[detector.IcmpOptions]{detect}))
+		}
+	}
+
+	return tasks, err
 }
 
 func (api *HttpApi) HandleIcmpDetect(ctx *gin.Context) {
@@ -50,17 +99,15 @@ func (api *HttpApi) HandleIcmpDetect(ctx *gin.Context) {
 		return
 	}
 
-	var targets = make([]detector.IcmpDetect, 0)
-	for _, target := range payload.Targets {
-		var options = detector.IcmpDetect{
-			Target:  target,
-			Count:   payload.Count,
-			Timeout: payload.Timeout,
-		}
-
-		targets = append(targets, options)
+	tasks, err := convertPayloadToIcmpTask(payload)
+	if err != nil {
+		ctx.JSON(http.StatusOK, NewCommonResponse(1, err.Error(), nil))
+		return
 	}
-	api.icmpPublisher.Publish() <- detector.Task[detector.IcmpDetect]{Targets: targets}
+	for _, task := range tasks {
+		api.icmpPublisher.Publish() <- task
+	}
+
 	ctx.JSON(http.StatusOK, NewCommonResponse(0, "ok", nil))
 }
 

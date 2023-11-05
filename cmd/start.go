@@ -7,7 +7,7 @@ import (
 	dispatcher "detect-server/dispatcher"
 	"detect-server/log"
 	"detect-server/sender"
-	"github.com/IBM/sarama"
+	"github.com/go-ping/ping"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	_ "gopkg.in/yaml.v3"
@@ -42,52 +42,53 @@ func init() {
 func startDetectServer() {
 	var (
 		icmpConnectorOptions = connector.Options{
-			MaxBufferSize: viper.GetInt("connector.icmp.buffer.maxSize"),
+			MaxBufferSize: viper.GetInt("connector.icmp.buffer.size"),
 		}
-		icmpDetectorOptions = detector.IcmpDetectorOptions{
-			DefaultTimeout:     viper.GetInt("detector.icmp.detect.timeout"),
-			DefaultCount:       viper.GetInt("detector.icmp.detect.count"),
-			MaxRunnerCount:     viper.GetInt("detector.icmp.runner.count"),
-			MaxTaskBufferSize:  viper.GetInt("detector.icmp.task.bufferSize"),
-			MaxResultQueueSize: viper.GetInt("detector.icmp.task.resultQueueSize"),
+		msgConnectorOptions = connector.Options{
+			MaxBufferSize: viper.GetInt("sender.buffer.size"),
 		}
-		dispatcherOptions = dispatcher.Options{
-			MaxIcmpResultQueueSize: viper.GetInt("dispatcher.icmp.result.queue.maxSize"),
-		}
-		httpApiOptions = api.HttpApiOptions{
-			Listen:           viper.GetString("api.http.listen"),
-			MaxDetectTargets: viper.GetInt("api.http.maxReceiveSize"),
-		}
-		kafkaSenderOptions = sender.KafkaSenderOptions{
-			Brokers:     viper.GetStringSlice("sender.kafka.brokers"),
-			Topic:       viper.GetString("sender.kafka.topic"),
-			MessageKey:  viper.GetString("sender.kafka.messageKey"),
-			KafkaConfig: sarama.NewConfig(),
-		}
+		icmpDetectorOptions = detector.NewIcmpDetectorOptions()
+		dispatcherOptions   = dispatcher.NewOptions()
+		httpApiOptions      = api.NewHttpApiOptions()
+		kafkaSenderOptions  = sender.NewKafkaSenderOptions()
 	)
 
 	var (
-		icmpConnector = connector.NewConnector[detector.Task[detector.IcmpDetect]](icmpConnectorOptions)
-		dispatch      = dispatcher.NewDispatcher(dispatcherOptions)
+		icmpConnector = connector.NewChanConnector[dispatcher.Task[detector.IcmpOptions]](icmpConnectorOptions)
+		msgConnector  = connector.NewChanConnector[any](msgConnectorOptions)
+		dispatch      = dispatcher.NewDispatcher[detector.IcmpOptions, *ping.Statistics, dispatcher.DefaultMessage](dispatcherOptions)
 		icmpDetector  = detector.NewIcmpDetector(icmpDetectorOptions)
 		httpApi       = api.NewHttpApi(httpApiOptions)
 		kafkaSender   = sender.NewKafkaSender(kafkaSenderOptions)
+		processor     = dispatcher.NewDefaultProcessor[detector.IcmpOptions, *ping.Statistics, dispatcher.DefaultMessage]()
 	)
 
+	// start detector
 	var err = icmpDetector.Start()
 	if err != nil {
 		log.Logger.Errorf("start icmp detector failed. %s", err)
+		os.Exit(1)
 	}
 
-	dispatch.AddIcmpReceiver(icmpConnector)
-	dispatch.AddIcmpDetector(icmpDetector)
-	dispatch.AddSender(kafkaSender)
+	// start sender
+	kafkaSender.AddReceiver(msgConnector)
+	if err = kafkaSender.Start(); err != nil {
+		log.Logger.Errorf("start kafka sender failed. %s", err)
+		os.Exit(1)
+	}
+
+	// start dispatcher
+	dispatch.AddReceiver(icmpConnector)
+	dispatch.AddDetector(icmpDetector)
+	dispatch.AddPublisher(msgConnector)
+	dispatch.AddProcessor(processor)
 
 	if err := dispatch.Start(); err != nil {
 		log.Logger.Errorf("start dispatcher failed. %s", err)
 		os.Exit(1)
 	}
 
+	// start api
 	httpApi.AddIcmpPublisher(icmpConnector)
 	if err := httpApi.Start(); err != nil {
 		log.Logger.Errorf("start http api failed. %s", err)

@@ -19,13 +19,13 @@ type Options struct {
 	MaxBufferSize int
 }
 
-type commonConnector[T any] struct {
+type chanConnector[T any] struct {
 	buffer  chan T
 	options Options
 }
 
-func NewConnector[T any](options Options) Connector[T] {
-	var connector = &commonConnector[T]{
+func NewChanConnector[T any](options Options) Connector[T] {
+	var connector = &chanConnector[T]{
 		buffer:  make(chan T, options.MaxBufferSize),
 		options: options,
 	}
@@ -33,7 +33,7 @@ func NewConnector[T any](options Options) Connector[T] {
 	return connector
 }
 
-func (receiver *commonConnector[T]) Publish() chan<- T {
+func (receiver *chanConnector[T]) Publish() chan<- T {
 	if receiver.buffer == nil {
 		receiver.buffer = make(chan T, receiver.options.MaxBufferSize)
 	}
@@ -41,7 +41,7 @@ func (receiver *commonConnector[T]) Publish() chan<- T {
 	return receiver.buffer
 }
 
-func (receiver *commonConnector[T]) Receive() <-chan T {
+func (receiver *chanConnector[T]) Receive() <-chan T {
 	if receiver.buffer == nil {
 		receiver.buffer = make(chan T, receiver.options.MaxBufferSize)
 	}

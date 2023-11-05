@@ -1,71 +1,71 @@
 package detector
 
 import (
-	"context"
-	"fmt"
-	"sync"
+	"github.com/go-ping/ping"
 )
 
 // Detector support sync and async method to detect target
-type Detector[T, R any] interface {
+type Detector[T DetectInput, R DetectOutput] interface {
 	// Start Detector
 	Start() error
 
 	// Stop Detector, it will wait for all detect target finished
 	Stop() error
 	// Detect detect single target and return result sync
-	Detect(T) Result[T, R]
-	Detects() chan<- Task[T]
-	Results() <-chan Result[T, R]
+	Detect(target DetectTarget[T]) DetectResult[T, R]
+	// Detects detect many targets
+	Detects() chan<- DetectTarget[T]
+	Results() <-chan DetectResult[T, R]
 }
 
-// Task may contain many targets
-type Task[T any] struct {
-	Targets []T
+type DetectType = string
+
+const (
+	ICMPDetect DetectType = "icmp"
+	TCPDetect  DetectType = "tcp"
+	UDPDetect  DetectType = "udp"
+)
+
+type DetectStatus = string
+
+type DetectInput interface {
+	IcmpOptions | TcpOptions | UdpOptions | HttpOptions
 }
 
-type Result[T, R any] struct {
-	Detect T
-	Data   R
+type DetectOutput interface {
+	*ping.Statistics
+}
+
+type DetectTarget[T DetectInput] struct {
+	Type    DetectType
+	Target  string
+	Options DetectOptions[T]
+}
+
+type DetectOptions[T DetectInput] struct {
+	Count   int
+	Timeout int
+	Options T
+}
+
+type DetectResult[T DetectInput, R DetectOutput] struct {
+	Target DetectTarget[T]
+	Result R
 	Error  error
 }
 
-type RunnerController struct {
-	ctx        context.Context
-	cancelFunc context.CancelFunc
-}
-
-type Controller struct {
-	sync.RWMutex
-	controls map[string]*RunnerController
-}
-
-func (controller *Controller) Add(name string, runner *RunnerController) error {
-	controller.Lock()
-	defer controller.Unlock()
-	var _, exist = controller.controls[name]
-	if exist {
-		return fmt.Errorf("runner name %s already exist", name)
+func NewDetectTarget[T DetectInput](t DetectType, target string, options DetectOptions[T]) DetectTarget[T] {
+	return DetectTarget[T]{
+		Type:    t,
+		Target:  target,
+		Options: options,
 	}
-	controller.controls[name] = runner
-	return nil
 }
 
-func (controller *Controller) Get(name string) (*RunnerController, bool) {
-	controller.RLock()
-	defer controller.RUnlock()
-	var runner, exist = controller.controls[name]
-	return runner, exist
-}
-
-func (controller *Controller) RunningCount() int {
-	controller.RLock()
-	defer controller.RUnlock()
-	return len(controller.controls)
-}
-
-func NewController() *Controller {
-	return &Controller{
-		controls: make(map[string]*RunnerController),
+func NewDetectResult[T DetectInput, R DetectOutput](target DetectTarget[T], result R, err error) DetectResult[T, R] {
+	return DetectResult[T, R]{
+		Target: target,
+		Result: result,
+		Error:  err,
 	}
 }
